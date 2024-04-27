@@ -219,15 +219,17 @@ import time
 
 # Constants
 TICKS_PER_METER = 800
+TICKS_PER_ROTATION = 150
 
-class Drive_Square:
-    def _init_(self):
+class Drive_Triangle:
+    def __init__(self):
         # Initialize global class variables
         self.cmd_msg = Twist2DStamped()
         self.pub_rate = 0.1
+        self.triangle_completed = False  # Flag to check if the triangle drive has been completed
 
         # Initialize ROS node
-        rospy.init_node('drive_square_node', anonymous=True)
+        rospy.init_node('drive_triangle_node', anonymous=True)
 
         # Initialize Pub/Subs
         self.pub = rospy.Publisher('/sherr/car_cmd_switch_node/cmd', Twist2DStamped, queue_size=2)
@@ -244,6 +246,11 @@ class Drive_Square:
         rospy.loginfo("State: %s", msg.state)
         if msg.state == "NORMAL_JOYSTICK_CONTROL":
             self.stop_robot()
+            self.triangle_completed = False  # Reset the flag if the mode changes
+        elif msg.state == "LANE_FOLLOWING" and not self.triangle_completed:
+            rospy.sleep(1)  # Wait for a sec for the node to be ready
+            self.drive_closed_loop_triangle(1.0)  # Drive a triangle with 1.0 m sides
+            self.triangle_completed = True  # Set the flag to prevent re-execution
 
     # Callback function for left wheel encoder ticks
     def left_encoder_callback(self, msg):
@@ -260,17 +267,38 @@ class Drive_Square:
         self.cmd_msg.omega = 0.0
         self.pub.publish(self.cmd_msg)
 
-    # Move forward or backward with closed-loop control using encoder feedback
-    def go_distance(self, distance, speed):
+    # Move forward with closed-loop control using encoder feedback
+    def go_forward(self, distance, speed):
         target_ticks = distance * TICKS_PER_METER  # Calculate target ticks
-        direction = 1 if distance >= 0 else -1  # Determine direction
 
-        while direction * (self.left_ticks + self.right_ticks) / 2 < direction * target_ticks:
+        while (self.left_ticks + self.right_ticks) / 2 < target_ticks:
             self.cmd_msg = Twist2DStamped()
-            self.cmd_msg.v = speed
+            self.cmd_msg.v = abs(speed)
             self.cmd_msg.omega = 0
             self.pub.publish(self.cmd_msg)
             time.sleep(self.pub_rate)
+
+        self.stop_robot()
+
+    # Rotate with closed-loop control using encoder feedback
+    def rotate_angle(self, angle, ang_speed):
+        initial_left_ticks, initial_right_ticks = self.get_encoder_ticks()  # Get initial encoder ticks
+        target_ticks = angle * TICKS_PER_ROTATION  # Calculate target ticks
+
+        while abs(self.right_ticks - initial_right_ticks) < target_ticks:
+            self.cmd_msg = Twist2DStamped()
+            self.cmd_msg.v = 0
+            self.cmd_msg.omega = ang_speed
+            self.pub.publish(self.cmd_msg)
+            time.sleep(self.pub_rate)
+
+        final_left_ticks, final_right_ticks = self.get_encoder_ticks()  # Get final encoder ticks
+
+        # Print the change in encoder ticks
+        left_ticks_change = final_left_ticks - initial_left_ticks
+        right_ticks_change = final_right_ticks - initial_right_ticks
+        rospy.loginfo("Left encoder ticks change: %d", left_ticks_change)
+        rospy.loginfo("Right encoder ticks change: %d", right_ticks_change)
 
         self.stop_robot()
 
@@ -278,16 +306,25 @@ class Drive_Square:
     def get_encoder_ticks(self):
         return self.left_ticks, self.right_ticks
 
+    # Drive a closed-loop triangle with return to starting position
+    def drive_closed_loop_triangle(self, side_length):
+        speed = 0.2  # Adjust speed based on the Duckiebot's capabilities and environment
+        ang_speed = 1.0  # Adjust angular speed based on the Duckiebot's turning capabilities
+        for _ in range(3):
+            self.go_forward(side_length, speed)
+            self.rotate_angle(2.094, ang_speed)  # 120 degrees turn with fixed angular speed
+        
+        # Return to starting position and orientation
+        self.rotate_angle(3.142, ang_speed)  # 180 degrees turn to align with starting orientation
+        self.go_forward(side_length, speed)  # Move forward to starting position
+
     def run(self):
         rospy.spin()  # Keeps node from exiting until node has shutdown
 
-if _name_ == '_main_':
+if __name__ == '__main__':
     try:
-        duckiebot_movement = Drive_Square()
-        duckiebot_movement.go_distance(0.5, 0.2)  # Forward motion at 0.2 m/s
-        rospy.sleep(1)  # Wait for 1 second between movements
-        duckiebot_movement.go_distance(-0.5, -0.1)  # Backward motion at 0.1 m/s
-        duckiebot_movement.stop_robot()  # Stop the robot after demonstration
-        rospy.spin()  # Keeps node from exiting until node has shutdown
+        duckiebot_movement = Drive_Triangle()
+        duckiebot_movement.run()
     except rospy.ROSInterruptException:
         pass
+
